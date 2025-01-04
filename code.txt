@@ -1,0 +1,412 @@
+Приложение А
+
+Текст программы
+
+> restart:
+> with(inttrans):
+> with(LinearAlgebra):
+  Normalizer := simplify:
+Входные параметры
+> k:=0.1:
+> B := Vector[row]([parse(DocumentTools:-GetProperty('B_coeff','value'))]):
+> A := Vector[row]([parse(DocumentTools:-GetProperty('A_coeff','value'))]):
+> phi_z := parse(DocumentTools:-GetProperty('phi_z_', 'value')):
+> L_z := parse(DocumentTools:-GetProperty('L_z_','value')):
+> t_u := 0.5: # Желаемое время установления
+> c_0_желаемое := 0:
+> c_1_желаемое := parse(DocumentTools:-GetProperty('с_1_','value')):
+> phi_gr := parse(DocumentTools:-GetProperty('phi_gr_','value')):
+> omega_z_beg := parse(DocumentTools:-GetProperty('omega_z_beg_','value')):
+> omega_z_end := parse(DocumentTools:-GetProperty('omega_z_end_','value')):
+> numberOfSteps := parse(DocumentTools:-GetProperty('numberOfSteps_','value')):
+Критерий Гурвица
+> GurvitzMatrix := proc (C::Vector)
+	local i::posint, j::posint,M::Matrix,n::posint,curIndex::posint;
+	n := Dimension(C)-1; # Степень полинома
+	M := Matrix(n,n);
+	for i from 1 to n do
+		for j from 1 to n do
+			curIndex := n - j*2 + i;
+			if (curIndex < 0 or curIndex > n) then
+				M[i,j]:=0;
+			else 
+				M[i,j]:=C[curIndex+1];
+			end if;
+		end do;
+	end do;
+	M;
+end proc:
+
+> GurvitzMinorDeterminants := proc (C::Vector) :: Vector;
+	local G::Matrix,n::posint,M::Vector,i::posint;
+	G := GurvitzMatrix(C);
+	n := RowDimension(G)-1;
+	M := Vector[row](n+1);
+	M[1] := G[1,1];
+	if (n <> 0) then
+		for i from 1 to n do
+			M[i+1] := Determinant(SubMatrix(G,[1..i+1],[1..i+1]));
+		end do;
+	end if;
+	return M;
+end proc:
+
+
+
+
+
+
+> RauseGurvitzCriterion := proc (C::Vector) :: string;
+	local M::Vector,s::real,i::posint,n::posint;
+	M := GurvitzMinorDeterminants(C);
+	n := Dimension(M);
+	s := sign(C[-1]);
+	for i from 1 to n do
+		if (s^i*M[i] < 0) then return "Полином неустойчив";
+		elif (i=n-1 and M[i]=0) then return "Колебательная граница устойчивости";
+		elif (i=n and M[i]=0) then return "Апериодическая граница устойчивости";
+		end if;
+	end do;
+"Полином устойчив";
+end proc:
+
+Функция нахождения максимального элемента массива
+> findMax := proc(C::Vector) :: float;
+	local i::posint,n::posint,max;
+	n := Dimension(C);
+	max := C[1];
+	for i from 2 to n do
+		#printf("max=%f ; C[%d]=%f\n",max,i,C[i]);
+		if max < C[i] then
+			max := C[i];
+		end if;
+	end do;
+	#printf("Exiting findMax\n");
+	max;
+end proc:
+Функция нахождения минимального элемента массива
+> findMin := proc(C::Vector) :: float;
+	local i::posint,n::posint,min::float;
+	n := Dimension(C);
+	min := C[1];
+	for i from 2 to n do
+		if min > C[i] then min := C[i]; end if;
+	end do;
+	min;
+end proc:
+Функция генерации полинома по вектору коэффициентов
+> generatePoly := proc(Coefficients::Vector,s) :: polynom;
+local polyToReturn::polynom,i::posint;
+polyToReturn :=0;
+for i from 1 to Dimension(Coefficients) do
+polyToReturn := polyToReturn + Coefficients[i]*s^(i-1);
+end do;
+polyToReturn;
+end proc:
+Функция коррекции фазы
+> CorPhi := proc(W,omega_v::Vector) :: Vector;
+	local i::posint,n::posint,phi::Vector;
+	phi := Vector[row](Dimension(omega_v));
+	phi := map(W,I*omega_v);
+	phi := map(argument,phi);
+	
+
+
+for i from 2 to Dimension(omega_v) do
+		n := round((phi[i]-phi[i-1])/(2*Pi));
+		if (n <> 0) then
+			phi[i]:=phi[i]-2*Pi*n;
+		end if;
+	end do;
+	phi;
+end proc:
+Функция расчета времени установления по переходной характеристике
+h - функция переходной характеристики
+W_0=h(infinity) - значение передаточной функции в нуле
+W_inf=h(0) - значение передаточной функции в пределе при значении частоты стремящейся к бесконечности
+T - верхний предел времени установления
+> getTransientPeriod2 := proc(h,W_0,W_inf,T)
+	local
+		dt::float,
+		numberOfPoints::posint,
+		t_k::Vector,
+		h_k::Vector,
+		hv::Vector,
+		f::function,
+		j::posint,
+		Delta::float,
+		k::posint,
+		ReEval::function,
+		max_h_k::float,
+		min_h_k::float,
+		max_v::float;
+	ReEval := num->Re(num);
+	dt := 1;
+	numberOfPoints:=round(T/dt);
+	f:= j -> j*T/numberOfPoints:
+	t_k:=Vector[row](numberOfPoints,f):
+	h_k:=map(h,t_k);
+	h_k:=map(ReEval,h_k);
+	# Отклонение от предельного значения
+	# при котором считаем переходную характеристику
+	# установившейся
+	max_h_k := findMax(h_k);
+	min_h_k := findMin(h_k);
+	max_v := max(abs(W_inf-max_h_k),abs(W_inf-min_h_k));
+	Delta:=0.05*abs(max_v);
+	for k from 1 to numberOfPoints do
+		#printf("Begining it No. %d\n",k);
+		hv := SubVector(h_k,[k..-1])-Vector[row](1..(Dimension(h_k)-(k-1)),W_0);
+		#printf("%{x}4f\n",hv);
+		if max(findMax(hv),-findMin(hv))<=Delta then 
+			return t_k[k];
+		end if;
+	end do;
+	T;#"Нет сходимости";
+end proc:
+
+
+
+Функция расчета времени установления по переходной характеристике с проверкой устойчивости
+На вход будем подавать характеристический полином и переходную характеристику.
+Полином - для определения устойчивости.
+> getTransientPeriod := proc(C::Vector,h,W_0,W_inf)
+		local 	eta::float,
+			T::float,
+			ReEval::function;
+
+	if (RauseGurvitzCriterion(C)<>"Полином устойчив")
+		then return "Нет сходимости";
+	end if;
+	# Определяем степень устойчивости
+	printf("before eta\n");
+	ReEval := num->evalf(Re(num));
+	eta:=-findMax(convert(map(ReEval,[solve(generatePoly(C,s))]),Vector));
+	printf("after eta\n");
+	# Определяем верхнюю оценку времени установления
+	T := (3/eta)*10;
+	return getTransientPeriod2(h,W_0,W_inf,T);
+end proc:
+Функция расчета перерегулирования по переходной характеристике
+> getTransientOvershoot := proc(h,W_0,C::Vector)
+	local
+		h_0::float,
+		h_max::float,
+		h_min::float,
+		T::float,
+		eta::float,
+		ReEval::function;
+	h_0 := h(0);
+	#printf("W_0=%f\n",W_0);
+	#printf("h_0=%f\n",h_0);
+	if (RauseGurvitzCriterion(C)="Полином неустойчив")
+		then return "Перерегулирование неопределимо ввиду отсутствия установившегося значения переходной характеристики";
+	end if;
+	# Определяем степень устойчивости
+	#printf("before eta\n");
+	ReEval := num->evalf(Re(num));
+	eta:=-findMax(convert(map(ReEval,[solve(generatePoly(C,s))]),Vector));
+	# Определяем верхнюю оценку времени установления
+	T := (3/eta)*3;
+	printf("T:=%f\n",T);
+	h_max := Optimization:-Maximize(h(evalf(t)),t=0..T,method=branchandbound)[1];
+	h_min := Optimization:-Minimize(h(evalf(t)),t=0..T,method=branchandbound)[1];
+	printf("h_max=%f\n",h_max);
+	printf("h_min=%f\n",h_min);
+	if (h_0 < W_0 and W_0 < h_max) then return (h_max - W_0)/(W_0 - h_0); end if;
+	if (h_0 > W_0 and W_0 > h_min) then return (h_min - W_0)/(W_0 - h_0); end if;
+	return 0;
+end proc:
+
+
+
+Расчет частотных характеристик
+> A_ := s->generatePoly(A,s);
+> B_ := s->generatePoly(B,s);
+> W_исх := s->(B_(s))/(A_(s));
+> evalf(W_исх(omega*sqrt(-1)));
+> j:= I;
+> P := omega->(Re(W_исх(I*omega)));
+> Q := omega->(Im(W_исх(I*omega)));
+> evalf[3](Q(omega*I));
+> DocumentTools:-SetProperty('P_',value,plot(P(omega),omega=0..0.5,thickness = 3));
+> DocumentTools:- SetProperty('Q_',value,plot(Q(omega),omega=0..0.5, thickness=3));
+> Amp := omega->(sqrt(P(omega)^2 + Q(omega)^2)):
+> DocumentTools:-SetProperty('A_',value,plot(Amp(omega),omega=0..1.5,thickness=3));
+> numberOfPoints := 100:
+> begOmega:=0.01:
+> endOmega:=1:
+> f:= (j) -> (begOmega + j*((endOmega - begOmega)/numberOfPoints)):
+omega_v:=Vector[row](numberOfPoints,f):
+> Phi := omega->arctan(Q(omega),P(omega)):
+> Phi_v:= CorPhi(W_исх,omega_v):
+> f:= (j) -> [omega_v[j],Phi_v[j]]:
+  vectorToPlot:=Vector[row](numberOfPoints,f):
+> with(plots):
+DocumentTools:-SetProperty('Phi_',value,pointplot(vectorToPlot,connect=true,color=red,thickness=3));
+> L := omega->20*log10(Amp(omega)):
+DocumentTools:-SetProperty('L_',value,plot(L(omega),omega=0..1.5,thickness=3,axis[1]=[mode=log]));
+> with(plots):
+DocumentTools:-SetProperty('LPhi_',value,pointplot(vectorToPlot,connect=true,color=red,thickness=3,axis[1]=[mode=log]));
+Расчет временных характеристик
+> RauseGurvitzCriterion(A);
+> h_original := t->evalf(invlaplace(W_исх(s)/s,s,t));
+> evalf[3](h_original(t));
+> evalf(h_original(1));
+> T_уст := getTransientPeriod(A,h_original,W_исх(0),h_original(0));
+> DocumentTools:-SetProperty('t_ust_',value,evalf[4](T_уст));
+> if T_уст="Нет сходимости" then
+	T3_уст:=1000;
+else
+	T3_уст := T_уст*3;
+end if;
+> 
+> DocumentTools:-SetProperty('h_',value,plot([h_original(t),W_исх(0)+abs(W_исх(0)-h_original(0))*0.05,W_исх(0)-abs(W_исх(0)-h_original(0))*0.05],t=0..T3_уст,color=[red,blue,blue],thickness=[3,1,1]));
+> w_original := t->evalf(invlaplace(W_исх(s),s,t)):
+> DocumentTools:-SetProperty('w_',value,plot(w_original(t),t=0..T3_уст,thickness=3));
+
+
+Расчет коэффициентов регулятора
+> K := W_исх(0):
+> K_i := 1/(K*c_1_желаемое):
+> DocumentTools:-SetProperty('K_i_',value,evalf[3](K_i));
+> lambda_z := 10^(0.05*L_z);
+> K_p := omega_z->evalf((cos(phi_gr+phi_z-Phi(omega_z)))/(lambda_z*Amp(omega_z)));
+> DocumentTools:-SetProperty('K_p_',value,plot(K_p(omega_z),omega_z=omega_z_beg..omega_z_end,thickness=3,axis[1]=[mode=log]));
+> K_d := omega_z->evalf(((sin(phi_gr+phi_z-Phi(omega_z)))/(lambda_z*Amp(omega_z)) + K_i/omega_z)/omega_z);
+
+> DocumentTools:-SetProperty('K_d_',value,plot(K_d(omega_z),omega_z=omega_z_beg..omega_z_end,thickness=3,axis[1]=[mode=log]));
+> R := (s,omega_z)->evalf((K_i + K_p(omega_z)*s + K_d(omega_z) * s^2)/s);
+> 
+> W_разомкнутая := (s,omega_z)->W_исх(s)*R(s,omega_z);
+> W_замкнутая := (s,omega_z)->W_разомкнутая(s,omega_z)/(1+W_разомкнутая(s,omega_z));
+> 
+> h_endless := (t,omega_z)->invlaplace(W_замкнутая(s,omega_z)/s,s,t);
+
+Получение оценок времени установления и перерегулирования конечной системы
+> getUpperBound := proc(A::Vector,B::Vector,K_i,K_p,K_d,omega_z) :: float;
+	local ReEval::function, eta::float;
+	ReEval := num->evalf(Re(evalf(num)));
+	eta:=-findMax(convert(map(ReEval,[solve(generatePoly(B,s)*(K_i+s*K_p(omega_z)+s^2*K_d(omega_z))+s*generatePoly(A,s))]),Vector));
+	if eta<=0 then return infinity; end if;
+	3/eta;
+end proc:
+> getLowerBound := proc(A::Vector,B::Vector,K_i,K_p,K_d,omega_z) ::float;
+	local ReEval::function, gamma::float,eta::float;
+	ReEval := num->evalf(Re(evalf(num)));
+	gamma:=-findMin(convert(map(ReEval,[solve(generatePoly(B,s)*(K_i+s*K_p(omega_z)+s^2*K_d(omega_z))+s*generatePoly(A,s))]),Vector));
+	eta:=-findMax(convert(map(ReEval,[solve(generatePoly(B,s)*(K_i+s*K_p(omega_z)+s^2*K_d(omega_z))+s*generatePoly(A,s))]),Vector));
+	if eta<=0 then return infinity; end if;
+	3/gamma;
+end proc:
+> getOvershoot := proc(A,B,K_i,K_p,K_d,omega_z) :: float;
+	local ReEval::function, eta::float,ReImEval::function,mu::float;
+	ReEval := num->evalf(Re(evalf(num)));
+	eta:=-findMax(convert(map(ReEval,[solve(generatePoly(B,s)*(K_i+s*K_p(omega_z)+s^2*K_d(omega_z))+s*generatePoly(A,s))]),Vector));
+	if eta<=0 then return infinity; end if;
+	ReImEval := num->evalf(abs(Im(num)/Re(num)));
+	mu := findMax(convert(map(ReImEval,[solve(generatePoly(B,s)*(K_i+s*K_p(omega_z)+s^2*K_d(omega_z))+s*generatePoly(A,s))]),Vector));
+	exp(-Pi/mu);
+end proc:
+
+
+> findNonZeroMin := proc(C::Vector) :: posint;
+	local i::posint,n::posint,min::float,min_i::posint;
+	n := Dimension(C);
+	min := 1000000000;
+	min_i:=1;
+	for i from 1 to n do
+		if min > C[i] and C[i]<>0 then 
+			min := C[i];
+			min_i:=i;
+		end if;
+	end do;
+	min_i;
+end proc:
+> findIndexOfMin := proc(C::Vector) :: posint;
+	local i::posint,n::posint,min::float,min_i::posint;
+	n := Dimension(C);
+	min := C[1];
+	min_i:=1;
+	for i from 2 to n do
+		if min > C[i] then 
+			min := C[i];
+			min_i:=i;
+		end if;
+	end do;
+	min_i;
+end proc:
+> f:= (j) -> (omega_z_beg + j*((omega_z_end - omega_z_beg)/numberOfSteps)):
+omega_z_v:=Vector[row](numberOfSteps,f):
+> mapFuncUpperBound := omega_z->evalf(getUpperBound(A,B,K_i,K_p,K_d,omega_z)):
+> upperBound_v := map(mapFuncUpperBound,omega_z_v):
+> f:= (j) -> [omega_z_v[j],upperBound_v[j]]:
+vectorToPlot:=Vector[row](numberOfSteps,f):
+> with(plots):
+up := pointplot(vectorToPlot,connect=true,color=red,thickness=3,axis[1]=[mode=log],legend="Верхняя оценка времени установления"):
+> 
+> f:= (j) -> (omega_z_beg + j*((omega_z_end - omega_z_beg)/numberOfSteps)):
+omega_z_v:=Vector[row](numberOfSteps,f):
+> mapFuncLowerBound := omega_z->evalf(getLowerBound(A,B,K_i,K_p,K_d,omega_z)):
+> lowerBound_v := map(mapFuncLowerBound,omega_z_v):
+> f:= (j) -> [omega_z_v[j],lowerBound_v[j]]:
+vectorToPlot1:=Vector[row](numberOfSteps,f):
+> with(plots):
+lower:= pointplot(vectorToPlot1,connect=true,color=blue,thickness=3,axis[1]=[mode=log],legend="Нижняя оценка времени установления"):
+> 
+> DocumentTools:-SetProperty('t_ust_plot',value,display(up,lower));
+> mapFuncOvershoot := omega_z->evalf(getOvershoot(A,B,K_i,K_p,K_d,omega_z)):
+> overshoot_v := map(mapFuncOvershoot,omega_z_v):
+> f:= (j) -> [omega_z_v[j],overshoot_v[j]]:
+vectorToPlot1:=Vector[row](numberOfSteps,f):
+> with(plots):
+overshoot:= pointplot(vectorToPlot1,connect=true,color=blue,thickness=3,axis[1]=[mode=log]):
+> DocumentTools:-SetProperty('sigma_plot',value,display(overshoot)):
+> 
+
+Расчет коэффициентов регулятора по критерию минимальной оценки времени установления
+> minOfUpperBound := findNonZeroMin(upperBound_v):
+> DocumentTools:-SetProperty('omega_max',caption,evalf[3](omega_z_v[minOfUpperBound]));
+> DocumentTools:-SetProperty('R_s_',value,evalf[3](R(s,omega_z_v[minOfUpperBound])));
+> DocumentTools:-SetProperty('W_z_s',value,evalf[3](rationalize(W_замкнутая(s,omega_z_v[minOfUpperBound]))));
+> DocumentTools:-SetProperty('t_max_',caption,evalf[3](upperBound_v[minOfUpperBound]));
+> DocumentTools:-SetProperty('K_p_min',value,evalf[3](K_p(omega_z_v[minOfUpperBound])));
+> DocumentTools:-SetProperty('K_d_min',value,evalf[3](K_d(omega_z_v[minOfUpperBound])));
+> h_endless := (t,omega_z)->evalf(invlaplace(W_замкнутая(s,omega_z)/s,s,t)):
+> h_endless_n := t->evalf(Re(h_endless(t,omega_z_v[minOfUpperBound]))):
+> T_уст_end := getTransientPeriod2(t->h_endless(t,omega_z_v[minOfUpperBound]),limit(W_замкнутая(omega*I,minOfUpperBound),omega=0),h_endless_n(0),2000):
+> DocumentTools:-SetProperty('t_ust_end',caption,T_уст_end);
+> T_уст_end_3 := evalf[3](3*T_уст_end):
+> DocumentTools:-SetProperty('h_endless_',value,plot(h_endless_n(t),t=0..T_уст_end_3));
+> 
+> f := omega_z->getTransientPeriod2(t->h_endless(t,omega_z),limit(W_замкнутая(omega*I,omega_current),omega=0),h_endless_n(0),1000):
+> DocumentTools:-SetProperty('t_ust_',value,evalf[4](T_уст));
+> 
+> DocumentTools:-SetProperty('sigma_',value,evalf[3](getTransientOvershoot(h_original,W_исх(0),A)));
+> #evalf[3](h_endless_n(t));
+> DocumentTools:-SetProperty('sigma_end',caption,getTransientOvershoot(h_endless_n,evalf(limit(W_замкнутая(x,omega_z_v[minOfUpperBound]),x=0)),A));
+> l:= j -> omega_z_beg + j*((omega_z_end - omega_z_beg)/numberOfSteps):
+omega_k_v:=Vector[row](numberOfSteps,l):
+
+> #findMin(map(f,omega_k_v));
+Расчет коэффициентов регулятора по критерию минимальной оценки перерегулирования
+> indexOfMinOvershoot := findIndexOfMin(overshoot_v);
+> omegaOfMinOvershoot := omega_z_v[indexOfMinOvershoot];
+> DocumentTools:-SetProperty('omegaOfMinOvershoot_',caption,evalf[3](omegaOfMinOvershoot));
+> DocumentTools:-SetProperty('R_s_omegaOfMinOvershoot',value,evalf[3](R(s,omegaOfMinOvershoot)));
+> evalf(omegaOfMinOvershoot);
+> evalf[3](rationalize(W_замкнутая(s,omegaOfMinOvershoot)));
+> DocumentTools:-SetProperty('W_z_s_omegaOfMinOvershoot',value,evalf[3](rationalize(W_замкнутая(s,omegaOfMinOvershoot))));
+> DocumentTools:-SetProperty('K_p_omegaOfMinOvershoot',value,evalf[3](K_p(omegaOfMinOvershoot)));
+> DocumentTools:-SetProperty('K_d_omegaOfMinOvershoot',value,evalf[3](K_d(omegaOfMinOvershoot)));
+> h_endless_omegaOfMinOvershoot := t->evalf(Re(h_endless(t,omegaOfMinOvershoot))):
+> T_уст_omegaOfMinOvershoot := getTransientPeriod2(t->h_endless(t,omegaOfMinOvershoot),limit(W_замкнутая(omega*I,omegaOfMinOvershoot),omega=0),h_endless_omegaOfMinOvershoot(0),2000):
+> DocumentTools:-SetProperty('t_ust_omegaOfMinOvershoot',caption,T_уст_omegaOfMinOvershoot);
+> T_уст_omegaOfMinOvershoot_3 := evalf[3](3*T_уст_omegaOfMinOvershoot):
+> DocumentTools:-SetProperty('h_omegaOfMinOvershoot_',value,plot(h_endless_omegaOfMinOvershoot(t),t=0..T_уст_omegaOfMinOvershoot_3));
+> 
+> #f := omega_z->getTransientPeriod2(t->h_endless(t,omega_z),limit(W_замкнутая(omega*I,omega_current),omega=0),h_endless_n(0),1000):
+> #DocumentTools:-SetProperty('t_ust_',value,evalf[4](T_уст));
+> 
+> #evalf[3](h_endless_n(t));
+> DocumentTools:-SetProperty('sigma_omegaOfMinOvershoot',caption,getTransientOvershoot(h_endless_omegaOfMinOvershoot,evalf(limit(W_замкнутая(x,omegaOfMinOvershoot),x=0)),A
